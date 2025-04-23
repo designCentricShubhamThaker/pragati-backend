@@ -6,7 +6,6 @@ import { Server } from 'socket.io';
 import orderRoutes from './routes/orderRoutes.js';
 import './config/db.js';
 
-
 dotenv.config();
 
 const app = express();
@@ -34,156 +33,184 @@ const io = new Server(httpServer, {
   }
 });
 
-const connectedUsers = {
-  dispatchers: new Map(),
-  teams: {
-    glass: new Map(),
-    caps: new Map(),
-    boxes: new Map(),
-    pumps: new Map()
-  }
+const connectedUsers = new Map();
+
+const teamMembers = {
+  dispatchers: new Set(),
+  glass: new Set(),
+  cap: new Set(),
+  box: new Set(),
+  pump: new Set()
 };
+
+const userIdentities = new Map(); 
 
 io.on('connection', (socket) => {
   console.log(`🔌 New connection: ${socket.id}`);
+
+  const { userId, role, team, teamType } = socket.handshake.query;
+  if (userId && role) {
+    const userInfo = {
+      socketId: socket.id,
+      userId,
+      role,
+      team: team?.toLowerCase().trim(),
+      teamType: teamType?.toLowerCase().trim(),
+      connected: true,
+      connectedAt: new Date().toISOString()
+    };
+
+    connectedUsers.set(socket.id, userInfo);
+    userIdentities.set(userId, socket.id);
+
+    addUserToTeams(socket, userInfo);
+
+    broadcastConnectedUsers();
+  }
+
   socket.on('register', (userData) => {
     const { userId, role, team, teamType } = userData;
-  
-    console.log(`📝 User registered: (${role}${team ? ', ' + team : ''})`);
-  
-    const userInfo = { socketId: socket.id, userId, role, team, connected: true };
 
-  
-    socket.join('all-teams');
-    console.log(`🔌 User joined all-teams room`);
-  
+    const uniqueId = userId || socket.id;
 
-    if (role === 'admin' ) {
-      connectedUsers.dispatchers.set(userId, userInfo);
+    const userInfo = {
+      socketId: socket.id,
+      userId: uniqueId,
+      role,
+      team: team?.toLowerCase().trim(),
+      teamType: teamType?.toLowerCase().trim(),
+      connected: true,
+      connectedAt: new Date().toISOString()
+    };
+
+    removeUserFromTeams(socket.id);
+
+    connectedUsers.set(socket.id, userInfo);
+    userIdentities.set(uniqueId, socket.id);
+
+    console.log(`📝 User registered: ${role}${team ? ', ' + team : ''} (${socket.id})`);
+
+    addUserToTeams(socket, userInfo);
+    socket.emit('registered', {
+      success: true,
+      user: {
+        socketId: socket.id,
+        role,
+        team: team?.toLowerCase().trim(),
+        teamType: teamType?.toLowerCase().trim()
+      }
+    });
+
+    broadcastConnectedUsers();
+  });
+
+
+  function addUserToTeams(socket, userInfo) {
+    const { role, team, teamType } = userInfo;
+
+    // Handle admin/dispatcher role
+    if (role === 'admin' || role === 'dispatcher') {
+      // Add to dispatchers team
+      teamMembers.dispatchers.add(socket.id);
       socket.join('dispatchers');
       console.log(`🔌 User joined dispatchers room`);
-      
-      const teamRooms = ['glass', 'caps', 'boxes', 'pumps'];
-      teamRooms.forEach(teamRoom => {
-        socket.join(teamRoom);
-        console.log(`🔌 Admin/Dispatcher joined ${teamRoom} room`);
-      });
     }
-    
+
+    // Handle team membership - add to specific team if provided
     if (team) {
       const normalizedTeam = team.toLowerCase().trim();
-      socket.join(normalizedTeam);
-      console.log(`🔌 User joined ${normalizedTeam} room`);
-  
-      if (connectedUsers.teams[normalizedTeam]) {
-        connectedUsers.teams[normalizedTeam].set(userId, userInfo);
-      } else {
-        connectedUsers.teams[normalizedTeam] = new Map();
-        connectedUsers.teams[normalizedTeam].set(userId, userInfo);
+
+      // Only join valid team rooms
+      if (teamMembers[normalizedTeam]) {
+        teamMembers[normalizedTeam].add(socket.id);
+        socket.join(normalizedTeam);
+        console.log(`🔌 User joined ${normalizedTeam} room`);
       }
     }
-  
-    socket.emit('registered', { success: true });
-    emitConnectedUsers();
-  });
+
+    // Also join based on teamType if it's different from team
+    if (teamType && teamType !== team) {
+      const normalizedTeamType = teamType.toLowerCase().trim();
+
+      if (teamMembers[normalizedTeamType]) {
+        teamMembers[normalizedTeamType].add(socket.id);
+        socket.join(normalizedTeamType);
+        console.log(`🔌 User joined ${normalizedTeamType} room based on teamType`);
+      }
+    }
+  }
+
   socket.on('ping', (callback) => {
     if (typeof callback === 'function') {
       callback({ time: new Date().toISOString() });
     }
   });
 
+
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${socket.id}`);
-    let userRemoved = false;
 
-    for (const [userId, info] of connectedUsers.dispatchers.entries()) {
-      if (info.socketId === socket.id) {
-        connectedUsers.dispatchers.delete(userId);
-        userRemoved = true;
-        break;
-      }
-    }
+    const userInfo = connectedUsers.get(socket.id);
 
-    if (!userRemoved) {
-      for (const team of Object.keys(connectedUsers.teams)) {
-        for (const [userId, info] of connectedUsers.teams[team].entries()) {
-          if (info.socketId === socket.id) {
-            connectedUsers.teams[team].delete(userId);
-            userRemoved = true;
-            break;
-          }
-        }
-        if (userRemoved) break;
-      }
-    }
+    removeUserFromTeams(socket.id);
 
-    emitConnectedUsers();
+    connectedUsers.delete(socket.id);
+
+    broadcastConnectedUsers();
   });
 
   socket.on('create-order', (data) => {
     const { order, teamTypes, timestamp } = data;
-    const user = findUserBySocketId(socket.id);
-  
+    const user = connectedUsers.get(socket.id);
+
     if (!order) {
       console.error('❌ Invalid order data received');
       socket.emit('order-create-error', { error: 'Invalid order data' });
       return;
     }
-    
+
     console.log(`📝 New order created by ${user?.role || 'unknown'}: Order #${order.order_number}`);
-    
+
     // Determine target teams
     let targetTeams = teamTypes || [];
     if (!targetTeams.length) {
-      const itemTeams = new Set();
-      
       if (order.order_details?.glass?.length > 0) targetTeams.push('glass');
-      if (order.order_details?.caps?.length > 0) targetTeams.push('caps');
-      if (order.order_details?.boxes?.length > 0) targetTeams.push('boxes');
-      if (order.order_details?.pumps?.length > 0) targetTeams.push('pumps');
-      
-      targetTeams = [...new Set([...targetTeams, ...itemTeams])];
+      if (order.order_details?.caps?.length > 0) targetTeams.push('cap');
+      if (order.order_details?.boxes?.length > 0) targetTeams.push('box');
+      if (order.order_details?.pumps?.length > 0) targetTeams.push('pump');
     }
-    
+
     if (targetTeams.length === 0) {
       console.warn(`⚠️ No target teams identified for order #${order.order_number}`);
       targetTeams = ['unassigned'];
     }
-    
+
     const normalizedTeams = targetTeams.map(team => team.toLowerCase().trim());
     console.log(`📢 Broadcasting new order to teams: ${normalizedTeams.join(', ')}`);
-    
+
     // Create the meta information for all broadcasts
     const metaInfo = {
       createdBy: user,
       timestamp: timestamp || new Date().toISOString(),
       targetTeams: normalizedTeams
     };
-    
+
     // Send to each specific team
     normalizedTeams.forEach(team => {
       console.log(`📤 Emitting to room: ${team}`);
-      const room = io.sockets.adapter.rooms.get(team);
-      const roomSize = room ? room.size : 0;
-      console.log(`Room ${team} has ${roomSize} members`);
-      
-      if (roomSize > 0) {
-        io.to(team).emit('new-order', {
-          order,
-          _meta: metaInfo
-        });
-      } else {
-        console.warn(`⚠️ Room ${team} has no members. Order might not be delivered.`);
-      }
+      io.to(team).emit('new-order', {
+        order,
+        _meta: metaInfo
+      });
     });
-    
+
     // Always broadcast to dispatchers
     io.to('dispatchers').emit('new-order', {
       order,
       _meta: metaInfo
     });
-    
-    // Confirm order creation to sender
+
+
     socket.emit('order-create-confirmed', {
       orderId: order._id,
       orderNumber: order.order_number,
@@ -196,15 +223,39 @@ io.on('connection', (socket) => {
   socket.on('order-update', (data) => {
     const { order, teamType, timestamp } = data;
     console.log(`📦 Order update received from ${teamType}: Order #${order.order_number}`);
-    const user = findUserBySocketId(socket.id);
+    const user = connectedUsers.get(socket.id);
+
+    // Determine which teams should receive this update
+    const targetTeams = [];
+    const details = order.order_details || {};
+
+    if (Array.isArray(details.glass) && details.glass.length > 0) targetTeams.push('glass');
+    if (Array.isArray(details.caps) && details.caps.length > 0) targetTeams.push('cap');
+    if (Array.isArray(details.boxes) && details.boxes.length > 0) targetTeams.push('box');
+    if (Array.isArray(details.pumps) && details.pumps.length > 0) targetTeams.push('pump');
+
+    // Create meta information
+    const metaInfo = {
+      updatedBy: user,
+      teamType,
+      timestamp: timestamp || new Date().toISOString(),
+      targetTeams
+    };
+
+    // Send to each specific team
+    targetTeams.forEach(team => {
+      console.log(`📤 Emitting order update to room: ${team}`);
+      io.to(team).emit('order-updated', {
+        order,
+        _meta: metaInfo
+      });
+    });
+
+    // Always broadcast to dispatchers
     console.log(`📢 Broadcasting order update to dispatchers`);
     io.to('dispatchers').emit('order-updated', {
-      ...order,
-      _meta: {
-        updatedBy: user,
-        teamType,
-        timestamp
-      }
+      order,
+      _meta: metaInfo
     });
 
     socket.emit('order-update-confirmed', {
@@ -214,56 +265,87 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Handle order edits with improved implementation
   socket.on('edit-order', ({ order, teamTypes }) => {
     console.log(`✏️ Order edited: #${order.order_number}`);
-    console.log(`🔁 Notifying teams:`, teamTypes);
+    const user = connectedUsers.get(socket.id);
 
-    teamTypes.forEach(team => {
+    // Default to all relevant teams if not specified
+    let targetTeams = teamTypes || [];
+    if (!targetTeams.length) {
+      const details = order.order_details || {};
+      if (details.glass?.length > 0) targetTeams.push('glass');
+      if (details.caps?.length > 0) targetTeams.push('cap');
+      if (details.boxes?.length > 0) targetTeams.push('box');
+      if (details.pumps?.length > 0) targetTeams.push('pump');
+    }
+
+    console.log(`🔁 Notifying teams:`, targetTeams);
+
+
+    const metaInfo = {
+      editedBy: user,
+      timestamp: new Date().toISOString(),
+      targetTeams
+    };
+
+
+    targetTeams.forEach(team => {
       io.to(team).emit('order-edited', order);
       console.log(`📤 Emitting edited order to room: ${team}`);
     });
+
+    io.to('dispatchers').emit('order-edited', order);
   });
 
- 
+
   socket.on('delete-order', (data) => {
     const { order, teamTypes, timestamp } = data;
-    const user = findUserBySocketId(socket.id);
-  
+    const user = connectedUsers.get(socket.id);
+
     if (!order || !order._id) {
       console.error('❌ Invalid order data received for deletion');
       socket.emit('order-delete-error', { error: 'Invalid order data' });
       return;
     }
-    
+
     console.log(`🗑️ Order deletion request from ${user?.role || 'unknown'}: Order #${order.order_number}`);
-    
-    // Notify teams about the deleted order
-    if (teamTypes && teamTypes.length > 0) {
-      console.log(`📢 Broadcasting order deletion to teams: ${teamTypes.join(', ')}`);
-      teamTypes.forEach(team => {
+
+    let normalizedTeams = teamTypes || [];
+    if (!normalizedTeams.length) {
+      const details = order.order_details || {};
+      if (details.glass?.length > 0) normalizedTeams.push('glass');
+      if (details.caps?.length > 0) normalizedTeams.push('cap');
+      if (details.boxes?.length > 0) normalizedTeams.push('box');
+      if (details.pumps?.length > 0) normalizedTeams.push('pump');
+    }
+
+
+    const metaInfo = {
+      deletedBy: user,
+      timestamp: timestamp || new Date().toISOString(),
+      targetTeams: normalizedTeams
+    };
+
+
+    if (normalizedTeams.length > 0) {
+      console.log(`📢 Broadcasting order deletion to teams: ${normalizedTeams.join(', ')}`);
+      normalizedTeams.forEach(team => {
         const roomName = team.toLowerCase().trim();
-        console.log(`📤 Emitting deleted order to room: ${roomName}`);
         io.to(roomName).emit('order-deleted', {
           order,
-          _meta: {
-            deletedBy: user,
-            timestamp: timestamp || new Date().toISOString()
-          }
+          _meta: metaInfo
         });
       });
     }
-  
-    // Always notify dispatchers
+
+
     io.to('dispatchers').emit('order-deleted', {
       order,
-      _meta: {
-        deletedBy: user,
-        targetTeams: teamTypes,
-        timestamp: timestamp || new Date().toISOString()
-      }
+      _meta: metaInfo
     });
-  
-    // Confirm deletion to the client that requested it
+
+
     socket.emit('order-delete-confirmed', {
       orderId: order._id,
       orderNumber: order.order_number,
@@ -272,68 +354,87 @@ io.on('connection', (socket) => {
     });
   });
 
- 
-  function findUserBySocketId(socketId) {
-    // Check dispatchers
-    for (const user of connectedUsers.dispatchers.values()) {
-      if (user.socketId === socketId) {
-        return user;
-      }
+
+  function removeUserFromTeams(socketId) {
+    if (teamMembers.dispatchers.has(socketId)) {
+      teamMembers.dispatchers.delete(socketId);
     }
 
-    // Check team members
-    for (const team of Object.values(connectedUsers.teams)) {
-      for (const user of team.values()) {
-        if (user.socketId === socketId) {
-          return user;
-        }
+    for (const team of ['glass', 'cap', 'box', 'pump']) {
+      if (teamMembers[team].has(socketId)) {
+        teamMembers[team].delete(socketId);
       }
     }
-
-    return null;
   }
 
-  function emitConnectedUsers() {
-    const dispatchersList = Array.from(connectedUsers.dispatchers.values()).map(u => ({
-      userId: u.userId,
-      connected: true,
-      lastActive: new Date().toISOString()
-    }));
+  setInterval(() => {
 
+    for (const [socketId, user] of connectedUsers.entries()) {
+      const socket = io.sockets.sockets.get(socketId);
+      if (!socket || socket.disconnected) {
+        console.log(`🧹 Cleaning up stale connection: ${socketId}`);
+        connectedUsers.delete(socketId);
+        removeUserFromTeams(socketId);
+      }
+    }
+  
+    broadcastConnectedUsers();
+  }, 30000); 
+  
 
+  function broadcastConnectedUsers() {
+    // Prepare dispatchersList
+    const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
+      const user = connectedUsers.get(socketId);
+      return {
+        userId: user?.userId || socketId,
+        connected: true,
+        lastActive: new Date().toISOString()
+      };
+    });
+
+    // Prepare team lists
     const teamLists = {};
     const allTeamMembers = [];
 
-    for (const [teamName, users] of Object.entries(connectedUsers.teams)) {
-      const teamUsers = Array.from(users.values()).map(u => ({
-        userId: u.userId,
-        team: teamName,
-        connected: true,
-        lastActive: new Date().toISOString()
-      }));
+    for (const [teamName, socketIds] of Object.entries(teamMembers)) {
+      if (teamName === 'dispatchers') continue; // Skip dispatchers as they're handled separately
+
+      const teamUsers = Array.from(socketIds).map(socketId => {
+        const user = connectedUsers.get(socketId);
+        return {
+          userId: user?.userId || socketId,
+          team: teamName,
+          connected: true,
+          lastActive: new Date().toISOString()
+        };
+      });
 
       teamLists[teamName] = teamUsers;
       allTeamMembers.push(...teamUsers);
     }
+
 
     io.to('dispatchers').emit('connected-users', {
       dispatchers: dispatchersList,
       teamMembers: allTeamMembers,
       teams: teamLists
     });
+    for (const teamName of ['glass', 'cap', 'box', 'pump']) {
+  
+      if (teamMembers[teamName].size > 0) {
+        const teamInfo = {
+          teamMembers: teamLists[teamName] || [],
+          dispatchers: dispatchersList
+        };
 
-    for (const teamName of Object.keys(connectedUsers.teams)) {
-      io.to(teamName).emit('connected-users', {
-        dispatchers: dispatchersList,
-        teamMembers: teamLists[teamName] || []
-      });
+        io.to(teamName).emit('connected-users', teamInfo);
+      }
     }
   }
 });
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🔌 Socket.io server initialized`);
+  console.log(`📱 Socket.IO server ready for connections`);
 });
-
-export { io, httpServer };
