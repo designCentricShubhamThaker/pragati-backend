@@ -1,4 +1,4 @@
-import  Order  from '../config/db.js';
+import Order from '../config/db.js';
 
 export const createOrder = async (req, res) => {
   try {
@@ -35,21 +35,112 @@ export const createOrder = async (req, res) => {
 };
 
 
+// export const filterOrders = async (req, res) => {
+//   try {
+//     const { orderType } = req.params;
+//     const { team } = req.query;
+
+//     if (!team) {
+//       return res.status(400).json({ error: 'Team parameter is required' });
+//     }
+
+//     const teamMapping = {
+//       glass: 'glass',
+//       caps: 'caps',
+//       box: 'boxes',
+//       pump: 'pumps'
+//     };
+
+//     const teamKey = Object.keys(teamMapping).find(key => team.toLowerCase().includes(key));
+//     if (!teamKey) {
+//       return res.status(400).json({ error: 'Invalid team type' });
+//     }
+
+//     const teamType = teamMapping[teamKey];
+
+//     const baseQuery = {
+//       [`order_details.${teamType}`]: { $exists: true, $not: { $size: 0 } }
+//     };
+
+//     const orders = await Order.find(
+//       baseQuery,
+//       {
+//         order_number: 1,
+//         dispatcher_name: 1,
+//         customer_name: 1,
+//         createdAt: 1,
+//         order_status: 1,
+//         order_details: 1
+//       }
+//     );
+
+
+//     const filteredOrders = orders.filter(order => {
+//       const teamItems = order.order_details[teamType] || [];
+
+//       const allItemsComplete = teamItems.every(item =>
+//         item.team_tracking?.status === 'Completed' ||
+//         (item.team_tracking?.total_completed_qty >= item.quantity)
+//       );
+
+//       return (orderType === 'liveOrders' && !allItemsComplete) ||
+//         (orderType === 'pastOrders' && allItemsComplete);
+//     });
+
+//     res.json({ orders: filteredOrders });
+//   } catch (error) {
+//     console.error('Error filtering orders:', error);
+//     res.status(500).json({ error: error.message });
+//   }
+// };
 
 export const filterOrders = async (req, res) => {
   try {
     const { orderType } = req.params;
-    const { team } = req.query;
+    const { team, role } = req.query;
 
+    console.log(`Filtering orders - Type: ${orderType}, Team: ${team}, Role: ${role}`);
+
+    // If it's an admin/dispatcher, filter by order_status only
+    if (role === 'admin' || role === 'dispatcher') {
+      console.log('Processing request for admin/dispatcher');
+      const query = {};
+      
+      if (orderType === 'liveOrders') {
+        query.order_status = { $ne: 'Completed' }; // Show orders that are not completed
+      } else if (orderType === 'pastOrders') {
+        query.order_status = 'Completed'; // Show only completed orders
+      }
+      
+      console.log('Admin/dispatcher query:', JSON.stringify(query));
+      
+      const orders = await Order.find(
+        query,
+        {
+          order_number: 1,
+          dispatcher_name: 1,
+          customer_name: 1,
+          created_at: 1,
+          createdAt: 1,
+          order_status: 1,
+          order_details: 1
+        }
+      );
+      
+      console.log(`Found ${orders.length} orders for admin/dispatcher`);
+      return res.json(orders);
+    }
+    
+    // For team users, continue with the existing functionality
     if (!team) {
       return res.status(400).json({ error: 'Team parameter is required' });
     }
 
     const teamMapping = {
-      glass: 'order_details.glass',
-      cap: 'order_details.caps',
-      box: 'order_details.boxes',
-      pump: 'order_details.pumps'
+      glass: 'glass',
+      caps: 'caps',
+      box: 'boxes',
+      pump: 'pumps'
     };
 
     const teamKey = Object.keys(teamMapping).find(key => team.toLowerCase().includes(key));
@@ -57,26 +148,44 @@ export const filterOrders = async (req, res) => {
       return res.status(400).json({ error: 'Invalid team type' });
     }
 
-    const teamField = teamMapping[teamKey];
+    const teamType = teamMapping[teamKey];
+    console.log(`Team type identified: ${teamType}`);
 
-    const orderStatus = orderType === 'liveOrders' ? 'Pending' : 'Completed';
+    const baseQuery = {
+      [`order_details.${teamType}`]: { $exists: true, $not: { $size: 0 } }
+    };
 
-    const filteredOrders = await Order.find(
-      {
-        order_status: orderStatus,
-        [`${teamField}.0`]: { $exists: true }
-      },
+    console.log('Team query:', JSON.stringify(baseQuery));
+    
+    const orders = await Order.find(
+      baseQuery,
       {
         order_number: 1,
         dispatcher_name: 1,
         customer_name: 1,
+        created_at: 1,
         createdAt: 1,
         order_status: 1,
-        [teamField]: 1
+        order_details: 1
       }
     );
 
-    res.json({ orders: filteredOrders });
+    console.log(`Found ${orders.length} orders for team before filtering`);
+
+    const filteredOrders = orders.filter(order => {
+      const teamItems = order.order_details[teamType] || [];
+      
+      const allItemsComplete = teamItems.every(item =>
+        item.team_tracking?.status === 'Completed' ||
+        (item.team_tracking?.total_completed_qty >= item.quantity)
+      );
+      
+      return (orderType === 'liveOrders' && !allItemsComplete) ||
+        (orderType === 'pastOrders' && allItemsComplete);
+    });
+
+    console.log(`Returning ${filteredOrders.length} filtered orders for team`);
+    res.json(filteredOrders);
   } catch (error) {
     console.error('Error filtering orders:', error);
     res.status(500).json({ error: error.message });
@@ -86,10 +195,10 @@ export const filterOrders = async (req, res) => {
 export const updateOrderProgress = async (req, res) => {
   try {
     const { order_number, team_type, updates } = req.body;
-    
+
     if (!order_number || !team_type || !updates || !Array.isArray(updates)) {
-      return res.status(400).json({ 
-        error: 'Invalid request. Required: order_number, team_type, and updates array' 
+      return res.status(400).json({
+        error: 'Invalid request. Required: order_number, team_type, and updates array'
       });
     }
 
@@ -122,28 +231,28 @@ export const updateOrderProgress = async (req, res) => {
       if (!itemToUpdate.team_tracking) {
         itemToUpdate.team_tracking = {
           total_completed_qty: update.qty_completed,
-          completed_entries: [{ 
+          completed_entries: [{
             qty_completed: update.qty_completed,
             timestamp: new Date()
           }],
           status: update.qty_completed >= itemToUpdate.quantity ? 'Completed' : 'Pending'
         };
       } else {
-        
+
         itemToUpdate.team_tracking.total_completed_qty += update.qty_completed;
         itemToUpdate.team_tracking.completed_entries.push({
           qty_completed: update.qty_completed,
           timestamp: new Date()
         });
-        
-        itemToUpdate.team_tracking.status = 
-          itemToUpdate.team_tracking.total_completed_qty >= itemToUpdate.quantity 
+
+        itemToUpdate.team_tracking.status =
+          itemToUpdate.team_tracking.total_completed_qty >= itemToUpdate.quantity
             ? 'Completed' : 'Pending';
       }
     });
 
-    const isOrderCompleted = Object.values(order.order_details).every(items => 
-      items.every(item => 
+    const isOrderCompleted = Object.values(order.order_details).every(items =>
+      items.every(item =>
         item.team_tracking?.status === 'Completed' || item.team_tracking?.status === undefined
       )
     );
@@ -152,10 +261,10 @@ export const updateOrderProgress = async (req, res) => {
     }
 
     await order.save();
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'Order progress updated successfully',
-      order 
+      order
     });
   } catch (error) {
     console.error('Order progress update error:', error);
@@ -185,7 +294,7 @@ export const updateOrder = async (req, res) => {
       order_details: 1,
       _id: 1
     }).lean();  // Use lean() to get plain JS object instead of Mongoose document
-    
+
     if (!existingOrder) {
       return res.status(404).json({ error: 'Order not found' });
     }
@@ -193,10 +302,10 @@ export const updateOrder = async (req, res) => {
     // Step 4: Merge order_details efficiently
     const existingDetails = existingOrder.order_details || {};
     const newDetails = updateData.order_details || {};
-    
+
     // Create merged details object
     const mergedOrderDetails = { ...existingDetails };
-    
+
     // Process sections in a more optimized way
     const processSection = (key, nameField) => {
       if (Array.isArray(newDetails[key]) && newDetails[key].length > 0) {
@@ -204,13 +313,13 @@ export const updateOrder = async (req, res) => {
         const validItems = newDetails[key].filter(item => {
           // For caps section
           if (key === 'caps') {
-            return item.cap_name && item.cap_name !== "N/A" && 
-                  item.neck_size && item.neck_size !== "-";
-          } 
+            return item.cap_name && item.cap_name !== "N/A" &&
+              item.neck_size && item.neck_size !== "-";
+          }
           // For other sections
           return item[nameField] && item[nameField] !== "N/A";
         });
-        
+
         if (validItems.length > 0) {
           mergedOrderDetails[key] = validItems;
         }
@@ -220,11 +329,11 @@ export const updateOrder = async (req, res) => {
     // Process all sections at once
     const sectionMap = {
       'caps': 'cap_name',
-      'glass': 'glass_name', 
+      'glass': 'glass_name',
       'boxes': 'box_name',
       'pumps': 'pump_name'
     };
-    
+
     Object.entries(sectionMap).forEach(([key, nameField]) => {
       processSection(key, nameField);
     });
@@ -241,7 +350,7 @@ export const updateOrder = async (req, res) => {
     const updatedOrder = await Order.findOneAndUpdate(
       queryCondition,
       { $set: finalUpdateData },  // Use $set operator explicitly for clarity
-      { 
+      {
         new: true,                // Return updated document
         runValidators: true,      // Run schema validators
         lean: true,               // Return plain JS object
@@ -296,29 +405,29 @@ export const deleteOrder = async (req, res) => {
     const orderNumber = req.params.orderNumber;
 
     if (!orderNumber) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid order number' 
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order number'
       });
     }
-    
+
     const deletedOrder = await Order.findOneAndDelete({ order_number: orderNumber });
-    
+
     if (!deletedOrder) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Order not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
       });
     }
 
     return res.status(200).json({
       success: true,
       message: 'Order deleted successfully',
-      data: { 
-        order_number: deletedOrder.order_number 
+      data: {
+        order_number: deletedOrder.order_number
       }
     });
-    
+
   } catch (error) {
     console.error('Error deleting order:', error);
     return res.status(500).json({
