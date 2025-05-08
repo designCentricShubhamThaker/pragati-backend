@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 app.use(cors({
   origin: "https://pragati-glass-frontend.vercel.app",  // Your frontend domain
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],  // Allow common HTTP methods
+  methods: ["GET", "POST", "PUT", "PATCH","DELETE", "OPTIONS"],  // Allow common HTTP methods
   allowedHeaders: [
     "Content-Type", 
     "Authorization", 
@@ -41,7 +41,7 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: "https://pragati-glass-frontend.vercel.app",  // Your frontend domain
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],  // Allow DELETE and OPTIONS methods
+    methods: ["GET", "POST", "DELETE","PATCH" ,"OPTIONS"],  // Allow DELETE and OPTIONS methods
     allowedHeaders: ["Content-Type", "Authorization"], // Allow necessary headers
     credentials: true  // Enable credentials (cookies, authentication)
   }
