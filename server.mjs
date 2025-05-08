@@ -12,6 +12,8 @@ const app = express();
 app.use(express.json());
 app.use(cors({
   origin: "https://pragati-glass-frontend.vercel.app",
+  methods: ["GET", "POST", "OPTIONS"],           // ✅ Add OPTIONS for preflight
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
 
@@ -29,7 +31,7 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: "https://pragati-glass-frontend.vercel.app",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "OPTIONS"],          // ✅ Add OPTIONS
     credentials: true
   }
 });
