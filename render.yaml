@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: pragati-glass-backend
+    env: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "node index.js"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        value: mongodb+srv://thakers968:jkkS096mmHp5Ahh6@cluster0.udg2g.mongodb.net/pragati-glass?retryWrites=true&w=majority&appName=Cluster0
